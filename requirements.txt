@@ -1,0 +1,14 @@
+﻿fastapi>=0.111
+uvicorn[standard]
+sqlalchemy[asyncio]>=2.0
+asyncpg
+alembic
+pydantic-settings
+transformers>=4.40
+peft>=0.10
+torch
+sentencepiece
+python-dotenv
+requests
+tqdm
+python-multipart
