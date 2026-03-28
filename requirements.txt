@@ -1,4 +1,4 @@
-﻿fastapi>=0.111
+fastapi>=0.111
 uvicorn[standard]
 sqlalchemy[asyncio]>=2.0
 asyncpg

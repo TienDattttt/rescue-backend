@@ -1,4 +1,4 @@
-﻿"""init
+"""init
 
 Revision ID: 0001_init
 Revises:
@@ -16,14 +16,14 @@ down_revision = None
 branch_labels = None
 depends_on = None
 
-severity_enum = sa.Enum('CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'NOT_RESCUE', name='severity_level')
-accessibility_enum = sa.Enum('EASY', 'MODERATE', 'HARD', name='accessibility_level')
-geocode_enum = sa.Enum('pending', 'success', 'failed', name='geocode_status')
-rescue_enum = sa.Enum('waiting', 'dispatched', 'rescued', 'false_alarm', name='rescue_status')
-pipeline_job_enum = sa.Enum(
-    'pending', 'scraping', 'classifying', 'extracting', 'deduplicating', 'done', 'failed', name='pipeline_job_status'
+severity_enum = postgresql.ENUM('CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'NOT_RESCUE', name='severity_level', create_type=False)
+accessibility_enum = postgresql.ENUM('EASY', 'MODERATE', 'HARD', name='accessibility_level', create_type=False)
+geocode_enum = postgresql.ENUM('pending', 'success', 'failed', name='geocode_status', create_type=False)
+rescue_enum = postgresql.ENUM('waiting', 'dispatched', 'rescued', 'false_alarm', name='rescue_status', create_type=False)
+pipeline_job_enum = postgresql.ENUM(
+    'pending', 'scraping', 'classifying', 'extracting', 'deduplicating', 'done', 'failed', name='pipeline_job_status', create_type=False
 )
-sync_status_enum = sa.Enum('live', 'lagging', 'paused', name='sync_status')
+sync_status_enum = postgresql.ENUM('live', 'lagging', 'paused', name='sync_status', create_type=False)
 
 
 def upgrade() -> None:

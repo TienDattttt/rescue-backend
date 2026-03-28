@@ -1,12 +1,12 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import json
 from functools import lru_cache
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 
 from pydantic import field_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 BASE_DIR = Path(__file__).resolve().parents[2]
 
@@ -25,7 +25,7 @@ class Settings(BaseSettings):
     CLASSIFIER_THRESHOLD: float = 0.4
     CLASSIFIER_DEVICE: str = 'cpu'
     OPENROUTER_MODEL: str = 'meta-llama/llama-3.3-70b-instruct:free'
-    CORS_ORIGINS: list[str] = ['http://localhost:5173']
+    CORS_ORIGINS: Annotated[list[str], NoDecode] = ['http://localhost:5173']
 
     @field_validator('CORS_ORIGINS', mode='before')
     @classmethod

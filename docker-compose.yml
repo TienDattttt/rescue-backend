@@ -1,0 +1,65 @@
+version: "3.9"
+
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: rescue_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: rescue_db
+      POSTGRES_USER: rescue_user
+      POSTGRES_PASSWORD: rescue_pass
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rescue_user -d rescue_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: rescue_pgadmin
+    restart: unless-stopped
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@rescue.dev
+      PGADMIN_DEFAULT_PASSWORD: admin
+    ports:
+      - "5050:80"
+    depends_on:
+      - db
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: rescue_backend
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://rescue_user:rescue_pass@db:5432/rescue_db
+    volumes:
+      - .:/app
+      - hf_cache:/root/.cache/huggingface
+      - ./results:/app/results
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    command: >
+      sh -c "
+        bash scripts/wait_for_db.sh &&
+        alembic upgrade head &&
+        uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload --reload-dir /app/app
+      "
+
+volumes:
+  postgres_data:
+  pgadmin_data:
+  hf_cache:

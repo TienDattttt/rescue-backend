@@ -1,4 +1,4 @@
-﻿# rescue_backend
+# rescue_backend
 
 FastAPI backend cho hệ thống điều phối cứu hộ thiên tai. Backend này chạy pipeline 4 stage:
 
@@ -83,3 +83,73 @@ curl http://localhost:8000/cases
 - Tất cả blocking operations như scraper GraphQL/requests và model inference đều được bọc qua executor.
 - `raw_comment` luôn giữ nguyên đầy đủ, không truncate.
 - Response schemas bám theo frontend contract tại `D:\Ki2Nam4\DSS\AHP-RESCUE\src\shared\types\domain.ts`.
+
+## Chạy với Docker (recommended cho dev)
+
+### Lần đầu setup
+```bash
+cp .env.example .env
+```
+
+Chỉ cần điền `OPENROUTER_API_KEY`, phần còn lại có thể giữ nguyên.
+
+```bash
+docker-compose up --build
+```
+
+### Lần sau (không cần build lại)
+```bash
+docker-compose up
+```
+
+### Services sau khi bật
+| Service    | URL                        | Mô tả                       |
+|------------|----------------------------|-----------------------------|
+| Backend    | http://localhost:8000      | FastAPI backend             |
+| API Docs   | http://localhost:8000/docs | Swagger UI                  |
+| pgAdmin    | http://localhost:5050      | Quản lý DB (GUI)            |
+| PostgreSQL | localhost:5432             | Kết nối trực tiếp nếu cần   |
+
+pgAdmin login: `admin@rescue.local` / `admin`
+
+pgAdmin kết nối DB:
+- host: `db`
+- user: `rescue_user`
+- password: `rescue_pass`
+- database: `rescue_db`
+
+### Scraper (chạy trên máy thật, KHÔNG trong Docker)
+```bash
+cd ../facebook_post_comment_scraper
+python main.py --url "https://facebook.com/..."
+```
+
+Scraper gọi vào backend qua `http://localhost:8000/pipeline/run`.
+
+### Các lệnh hữu ích
+```bash
+docker-compose logs -f backend
+```
+
+```bash
+docker-compose exec backend bash
+```
+
+```bash
+docker-compose exec backend python scripts/verify_setup.py
+```
+
+```bash
+docker-compose down -v
+docker-compose up
+```
+
+```bash
+docker-compose restart backend
+```
+
+### Hot-reload
+Source code được mount vào container. Sửa file `.py` bất kỳ thì `uvicorn` sẽ tự reload, không cần restart Docker.
+
+### HF Model cache
+PhoBERT được cache trong Docker volume `hf_cache`. Lần đầu chạy sẽ download model từ HF Hub; các lần restart sau không cần tải lại.
