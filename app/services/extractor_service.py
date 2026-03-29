@@ -2,239 +2,236 @@ from __future__ import annotations
 
 import json
 import logging
+import random
 import re
 import time
 from functools import lru_cache
+from pathlib import Path
 from typing import Any
 
-import requests
+import google.generativeai as genai
 
 from app.core.config import get_settings
 
 logger = logging.getLogger(__name__)
 
-OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions'
-ALLOWED_VULNERABLE_GROUPS = ['trẻ em', 'em bé', 'người già', 'phụ nữ mang thai']
-VALID_SEVERITY = {'CRITICAL', 'HIGH', 'MEDIUM', 'LOW'}
-VALID_ACCESSIBILITY = {'EASY', 'MODERATE', 'HARD'}
-JSON_BLOCK_PATTERN = re.compile(r'```(?:json)?\s*(.*?)```', re.DOTALL | re.IGNORECASE)
-PHONE_PATTERN = re.compile(r'\d+')
+ALLOWED_VULNERABLE_GROUPS = ["trẻ em", "em bé", "người già", "phụ nữ mang thai"]
+VALID_SEVERITY = {"CRITICAL", "HIGH", "MEDIUM", "LOW"}
+VALID_ACCESSIBILITY = {"EASY", "MODERATE", "HARD"}
+PHONE_PATTERN = re.compile(r"\d+")
+BATCH_SIZE = 5
+DELAY_BETWEEN_BATCHES = 6
+DELAY_AFTER_429 = 65
+MAX_RETRIES = 3
+CHECKPOINT_FILE = Path("/app/results/stage3_checkpoint.json")
 
 
 class ExtractorService:
-    SYSTEM_PROMPT = (
-        'Bạn là chuyên gia phân tích tin nhắn cầu cứu trong thiên tai tại Việt Nam.\n'
-        'Nhiệm vụ: trích xuất thông tin cứu hộ từ bình luận Facebook.\n'
-        'Luôn trả về JSON hợp lệ, không giải thích thêm.\n'
-        'Nếu không tìm thấy thông tin, dùng null cho số/chuỗi, [] cho mảng.'
-    )
+    SYSTEM_INSTRUCTION = """
+Bạn là chuyên gia phân tích tin nhắn cầu cứu thiên tai tại Việt Nam.
+Chỉ trả về JSON hợp lệ, không giải thích thêm.
+Nếu không tìm thấy thông tin: null cho số/chuỗi, [] cho mảng.
+""".strip()
 
-    def __init__(self, api_key: str, default_model: str) -> None:
+    def __init__(self, api_key: str):
         self.api_key = api_key
-        self.default_model = default_model
-        self.session = requests.Session()
+        genai.configure(api_key=api_key)
+        self.model = genai.GenerativeModel(
+            model_name="gemini-2.5-flash-lite",
+            generation_config=genai.GenerationConfig(
+                temperature=0.1,
+                max_output_tokens=2048,
+            ),
+        )
+
+    def _build_prompt(self, comments: list[dict[str, Any]]) -> str:
+        numbered = "\n".join(f"[{index + 1}] {comment['text']}" for index, comment in enumerate(comments))
+        count = len(comments)
+        return f"""Phân tích {count} bình luận cầu cứu thiên tai Việt Nam.
+Trả về JSON array đúng {count} object theo thứ tự. Chỉ JSON, không giải thích.
+
+{numbered}
+
+Mỗi object gồm:
+{{
+  "locationDescription": "Trích NGUYÊN VĂN địa chỉ/vị trí cụ thể nhất từ bình luận.
+    VD: '45 đường Trần Hưng Đạo phường 5', 'xóm 3 thôn Bình An xã Hòa Phú',
+    'gần cầu Rồng quận Sơn Trà', 'hẻm 12 đường Lê Lợi'.
+    Nếu không có địa chỉ cụ thể → null",
+  "wardCommune": "phường/xã/thị trấn cụ thể nếu được đề cập, null nếu không",
+  "district": "quận/huyện/thị xã cụ thể nếu được đề cập, null nếu không",
+  "province": "tỉnh/thành phố cụ thể nếu được đề cập, null nếu không",
+  "numPeople": tổng số người cần cứu (integer), null nếu không rõ,
+  "vulnerableGroups": chỉ các giá trị có trong
+    ["trẻ em", "em bé", "người già", "phụ nữ mang thai"],
+  "waitingHours": số giờ đã chờ (float), null nếu không đề cập,
+  "severity": "CRITICAL" nếu nguy hiểm tính mạng ngay (đang chìm/mắc kẹt/thương nặng)
+              "HIGH" nếu nguy hiểm, cần cứu trong vài giờ
+              "MEDIUM" nếu cần hỗ trợ nhưng chưa nguy hiểm ngay
+              "LOW" nếu chỉ cần hàng hóa/thực phẩm/thuốc,
+  "accessibility": "HARD" nếu vùng sâu/sạt lở/cô lập hoàn toàn
+                   "MODERATE" nếu nước chảy xiết/đường hẹp khó vào
+                   "EASY" nếu thuyền/xe vào được tương đối dễ,
+  "phone": chỉ chữ số của SĐT đầu tiên (VD "0901 234 567"→"0901234567"),
+           null nếu không có,
+  "lat": latitude nếu có tọa độ GPS/link maps rõ ràng, null nếu không,
+  "lng": longitude tương tự
+}}
+
+Với địa chỉ hành chính Việt Nam:
+- wardCommune: chỉ lấy tên phường/xã/thị trấn
+  VD: "phường 5", "xã Hòa Phú", "thị trấn Cai Lậy"
+- district: chỉ lấy tên quận/huyện
+  VD: "quận 7", "huyện Cai Lậy", "TP Thủ Đức"
+- province: chỉ lấy tên tỉnh/thành phố
+  VD: "TP.HCM", "tỉnh Quảng Nam", "Đà Nẵng"
+- locationDescription: vẫn giữ NGUYÊN VĂN đầy đủ nhất có thể
+  (bao gồm số nhà, tên đường, xóm, ấp nếu có)
+
+Ví dụ input: "nhà tôi ở 45 đường Lê Lợi phường 5 quận 3 TPHCM"
+Ví dụ output:
+  locationDescription: "45 đường Lê Lợi phường 5 quận 3 TPHCM"
+  wardCommune: "phường 5"
+  district: "quận 3"
+  province: "TP.HCM"
+"""
+
+    def _parse_response(self, raw: str, expected: int) -> list[dict[str, Any]]:
+        if not raw or not raw.strip():
+            return [self._null_defaults() for _ in range(expected)]
+
+        cleaned = re.sub(r"```json\s*|\s*```", "", raw).strip()
+        match = re.search(r"\[.*\]", cleaned, re.DOTALL)
+        if not match:
+            return [self._null_defaults() for _ in range(expected)]
+
+        try:
+            parsed = json.loads(match.group())
+        except json.JSONDecodeError:
+            try:
+                repaired = match.group().rstrip().rstrip(",") + "]"
+                parsed = json.loads(repaired)
+                logger.warning("JSON repaired thành công")
+            except Exception:
+                return [self._null_defaults() for _ in range(expected)]
+
+        if not isinstance(parsed, list):
+            return [self._null_defaults() for _ in range(expected)]
+
+        while len(parsed) < expected:
+            parsed.append(self._null_defaults())
+        return [self._sanitize_item(item if isinstance(item, dict) else self._null_defaults()) for item in parsed[:expected]]
+
+    def _null_defaults(self) -> dict[str, Any]:
+        return {
+            "locationDescription": None,
+            "wardCommune": None,
+            "district": None,
+            "province": None,
+            "numPeople": None,
+            "vulnerableGroups": [],
+            "waitingHours": None,
+            "severity": "MEDIUM",
+            "accessibility": "MODERATE",
+            "phone": None,
+            "lat": None,
+            "lng": None,
+        }
+
+    def _call_gemini(self, prompt: str) -> str:
+        for attempt in range(MAX_RETRIES):
+            try:
+                response = self.model.generate_content(self.SYSTEM_INSTRUCTION + "\n\n" + prompt)
+                text = getattr(response, "text", "")
+                logger.info("Gemini response length: %s", len(text) if text else 0)
+                logger.info("Gemini response: %s", text)
+                return text or ""
+            except Exception as exc:
+                err_str = str(exc)
+                if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
+                    logger.warning("429 rate limit, chờ %ss...", DELAY_AFTER_429)
+                    time.sleep(DELAY_AFTER_429)
+                else:
+                    logger.warning("Gemini lỗi attempt %s: %s", attempt + 1, exc)
+                    time.sleep(5)
+        return ""
+
+    def save_checkpoint(self, results: list[dict[str, Any]], next_index: int) -> None:
+        CHECKPOINT_FILE.parent.mkdir(parents=True, exist_ok=True)
+        CHECKPOINT_FILE.write_text(
+            json.dumps({"next_index": next_index, "results": results}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+    def load_checkpoint(self) -> tuple[list[dict[str, Any]], int]:
+        if CHECKPOINT_FILE.exists():
+            data = json.loads(CHECKPOINT_FILE.read_text(encoding="utf-8"))
+            logger.info("Resume từ checkpoint: đã xử lý %s comments", data["next_index"])
+            return list(data.get("results") or []), int(data.get("next_index") or 0)
+        return [], 0
+
+    def clear_checkpoint(self) -> None:
+        if CHECKPOINT_FILE.exists():
+            CHECKPOINT_FILE.unlink()
 
     def extract_batch(self, comments: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if not comments:
             return []
-        if len(comments) > 10:
-            results: list[dict[str, Any]] = []
-            for start in range(0, len(comments), 10):
-                results.extend(self.extract_batch(comments[start : start + 10]))
-            return results
 
-        payload = self._build_payload(comments)
-        try:
-            response = self._try_models_in_order(payload)
-            parsed = self._parse_response_array(response, expected_count=len(comments))
-            if parsed is None:
-                raise ValueError('Batch response is not valid JSON array')
-            return [self._sanitize_item(item) for item in parsed]
-        except Exception as exc:
-            logger.warning('Batch extraction failed, falling back to single-comment mode: %s', exc)
-            fallback_results: list[dict[str, Any]] = []
-            for comment in comments:
-                try:
-                    single_payload = self._build_payload([comment])
-                    response = self._try_models_in_order(single_payload)
-                    parsed = self._parse_response_array(response, expected_count=1)
-                    if not parsed:
-                        raise ValueError('Single extraction returned empty payload')
-                    fallback_results.append(self._sanitize_item(parsed[0]))
-                except Exception as inner_exc:
-                    logger.warning('Single-comment extraction failed for comment=%s: %s', comment.get('id'), inner_exc)
-                    fallback_results.append(self._null_result())
-            return fallback_results
+        results, start_index = self.load_checkpoint()
+        batches = [comments[index : index + BATCH_SIZE] for index in range(0, len(comments), BATCH_SIZE)]
 
-    def _build_payload(self, comments: list[dict[str, Any]]) -> dict[str, Any]:
-        lines = [
-            f'Phân tích {len(comments)} bình luận cầu cứu sau. Trả về JSON array gồm {len(comments)} object theo đúng thứ tự.',
-            '',
-        ]
-        for index, comment in enumerate(comments, start=1):
-            lines.append(f'[{index}] {comment.get("text", "")}')
-        lines.extend(
-            [
-                '',
-                'Trả về array JSON:',
-                '[',
-                '{',
-                '  "locationDescription": "địa chỉ/vị trí cụ thể được nhắc đến, hoặc null",',
-                '  "numPeople": số người cần cứu (integer) hoặc null,',
-                '  "vulnerableGroups": ["trẻ em","em bé","người già","phụ nữ mang thai"] — chỉ nhóm nào thực sự được đề cập,',
-                '  "waitingHours": số giờ đã chờ (number) hoặc null,',
-                '  "severity": một trong "CRITICAL"|"HIGH"|"MEDIUM"|"LOW",',
-                '  "accessibility": một trong "EASY"|"MODERATE"|"HARD",',
-                '  "phone": "số điện thoại đầu tiên tìm thấy, chỉ chữ số" hoặc null,',
-                '  "lat": tọa độ latitude nếu có GPS link/tọa độ rõ ràng, ngược lại null,',
-                '  "lng": tọa độ longitude nếu có GPS link/tọa độ rõ ràng, ngược lại null',
-                '}',
-                ']',
-                '',
-                'Quy tắc severity:',
-                '- CRITICAL: nguy hiểm tính mạng ngay (đang chìm, mắc kẹt, thương nặng)',
-                '- HIGH: nguy hiểm, cần cứu trong vài giờ',
-                '- MEDIUM: cần hỗ trợ nhưng chưa nguy hiểm ngay',
-                '- LOW: cần hàng hóa, thực phẩm, thuốc',
-                '',
-                'Quy tắc accessibility:',
-                '- EASY: đường lớn, thuyền vào dễ',
-                '- MODERATE: nước chảy xiết, đường hẹp',
-                '- HARD: vùng sâu, sạt lở cô lập',
-            ]
-        )
-        return {
-            'messages': [
-                {'role': 'system', 'content': self.SYSTEM_PROMPT},
-                {'role': 'user', 'content': '\n'.join(lines)},
-            ],
-            'temperature': 0.1,
-            'max_tokens': 1200,
-        }
-
-    def _ordered_models(self) -> list[str]:
-        models = [
-            self.default_model,
-            'meta-llama/llama-3.3-70b-instruct:free',
-            'google/gemini-2.0-flash-exp:free',
-            'mistralai/mistral-7b-instruct:free',
-        ]
-        ordered: list[str] = []
-        for model in models:
-            if model and model not in ordered:
-                ordered.append(model)
-        return ordered
-
-    def _try_models_in_order(self, payload: dict[str, Any]) -> dict[str, Any]:
-        if not self.api_key:
-            raise RuntimeError('OPENROUTER_API_KEY chưa được cấu hình.')
-
-        last_error: Exception | None = None
-        for model_name in self._ordered_models():
-            try:
-                request_payload = dict(payload)
-                request_payload['model'] = model_name
-                return self._post_with_retry(request_payload)
-            except Exception as exc:
-                logger.warning('OpenRouter model %s failed: %s', model_name, exc)
-                last_error = exc
-        raise RuntimeError(f'Không model OpenRouter nào trả kết quả thành công: {last_error}')
-
-    def _post_with_retry(self, payload: dict[str, Any]) -> dict[str, Any]:
-        headers = {
-            'Authorization': f'Bearer {self.api_key}',
-            'Content-Type': 'application/json',
-            'HTTP-Referer': 'http://localhost:8000',
-            'X-Title': 'rescue_backend',
-        }
-        attempts = 3
-        for attempt in range(1, attempts + 1):
-            response = self.session.post(OPENROUTER_URL, headers=headers, json=payload, timeout=30)
-            if response.status_code < 400:
-                return response.json()
-            if response.status_code in {429, 500, 502, 503, 504} and attempt < attempts:
-                time.sleep(2 ** (attempt - 1))
+        for index, batch in enumerate(batches):
+            batch_start = index * BATCH_SIZE
+            if batch_start < start_index:
                 continue
-            raise RuntimeError(f'OpenRouter error {response.status_code}: {response.text}')
-        raise RuntimeError('OpenRouter request exhausted retries')
 
-    def _parse_response_array(self, response_json: dict[str, Any], expected_count: int) -> list[dict[str, Any]] | None:
-        content = response_json.get('choices', [{}])[0].get('message', {}).get('content', '')
-        if not content:
-            return None
+            if index > 0:
+                time.sleep(DELAY_BETWEEN_BATCHES + random.uniform(0, 2))
 
-        candidate = content.strip()
-        match = JSON_BLOCK_PATTERN.search(candidate)
-        if match:
-            candidate = match.group(1).strip()
+            prompt = self._build_prompt(batch)
+            raw = self._call_gemini(prompt)
+            batch_result = self._parse_response(raw, len(batch))
+            results.extend(batch_result)
+            self.save_checkpoint(results, batch_start + len(batch))
+            logger.info("Extraction: %s/%s comments", min(batch_start + len(batch), len(comments)), len(comments))
 
-        try:
-            parsed = json.loads(candidate)
-        except json.JSONDecodeError:
-            start = candidate.find('[')
-            end = candidate.rfind(']')
-            if start == -1 or end == -1 or end <= start:
-                logger.warning('Invalid JSON from extractor: %s', content)
-                return None
-            try:
-                parsed = json.loads(candidate[start : end + 1])
-            except json.JSONDecodeError:
-                logger.warning('Invalid JSON from extractor: %s', content)
-                return None
-
-        if not isinstance(parsed, list) or len(parsed) != expected_count:
-            logger.warning(
-                'Extractor returned %s objects; expected %s. Raw=%s',
-                len(parsed) if isinstance(parsed, list) else 'non-list',
-                expected_count,
-                content,
-            )
-            return None
-        return [item if isinstance(item, dict) else {} for item in parsed]
+        self.clear_checkpoint()
+        return results
 
     def _sanitize_item(self, item: dict[str, Any]) -> dict[str, Any]:
-        vulnerable = [group for group in item.get('vulnerableGroups') or [] if group in ALLOWED_VULNERABLE_GROUPS]
-        severity = str(item.get('severity') or 'MEDIUM').upper()
+        vulnerable = [group for group in item.get("vulnerableGroups") or [] if group in ALLOWED_VULNERABLE_GROUPS]
+        severity = str(item.get("severity") or "MEDIUM").upper()
         if severity not in VALID_SEVERITY:
-            severity = 'MEDIUM'
-        accessibility = str(item.get('accessibility') or 'MODERATE').upper()
+            severity = "MEDIUM"
+        accessibility = str(item.get("accessibility") or "MODERATE").upper()
         if accessibility not in VALID_ACCESSIBILITY:
-            accessibility = 'MODERATE'
+            accessibility = "MODERATE"
 
-        phone = item.get('phone')
+        phone = item.get("phone")
         if phone is not None:
-            digits = ''.join(PHONE_PATTERN.findall(str(phone)))
+            digits = "".join(PHONE_PATTERN.findall(str(phone)))
             phone = digits or None
 
-        lat = self._coerce_float(item.get('lat'))
-        lng = self._coerce_float(item.get('lng'))
+        lat = self._coerce_float(item.get("lat"))
+        lng = self._coerce_float(item.get("lng"))
         if lat is None or lng is None or not (8 <= lat <= 24 and 102 <= lng <= 110):
             lat = None
             lng = None
 
         return {
-            'locationDescription': self._normalize_optional_string(item.get('locationDescription')),
-            'numPeople': self._coerce_int(item.get('numPeople')),
-            'vulnerableGroups': vulnerable,
-            'waitingHours': self._coerce_float(item.get('waitingHours')),
-            'severity': severity,
-            'accessibility': accessibility,
-            'phone': phone,
-            'lat': lat,
-            'lng': lng,
-        }
-
-    def _null_result(self) -> dict[str, Any]:
-        return {
-            'locationDescription': None,
-            'numPeople': None,
-            'vulnerableGroups': [],
-            'waitingHours': None,
-            'severity': 'MEDIUM',
-            'accessibility': 'MODERATE',
-            'phone': None,
-            'lat': None,
-            'lng': None,
+            "locationDescription": self._normalize_optional_string(item.get("locationDescription")),
+            "wardCommune": self._normalize_optional_string(item.get("wardCommune")),
+            "district": self._normalize_optional_string(item.get("district")),
+            "province": self._normalize_optional_string(item.get("province")),
+            "numPeople": self._coerce_int(item.get("numPeople")),
+            "vulnerableGroups": vulnerable,
+            "waitingHours": self._coerce_float(item.get("waitingHours")),
+            "severity": severity,
+            "accessibility": accessibility,
+            "phone": phone,
+            "lat": lat,
+            "lng": lng,
         }
 
     def _normalize_optional_string(self, value: Any) -> str | None:
@@ -244,7 +241,7 @@ class ExtractorService:
         return text or None
 
     def _coerce_int(self, value: Any) -> int | None:
-        if value in (None, ''):
+        if value in (None, ""):
             return None
         try:
             return int(value)
@@ -252,7 +249,7 @@ class ExtractorService:
             return None
 
     def _coerce_float(self, value: Any) -> float | None:
-        if value in (None, ''):
+        if value in (None, ""):
             return None
         try:
             return float(value)
@@ -263,4 +260,4 @@ class ExtractorService:
 @lru_cache(maxsize=1)
 def get_extractor_service() -> ExtractorService:
     settings = get_settings()
-    return ExtractorService(api_key=settings.OPENROUTER_API_KEY, default_model=settings.OPENROUTER_MODEL)
+    return ExtractorService(api_key=settings.GEMINI_API_KEY)

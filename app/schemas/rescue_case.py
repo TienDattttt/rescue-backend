@@ -19,6 +19,15 @@ class RescueCaseOut(BaseModel):
         str | None,
         Field(default=None, validation_alias=AliasChoices('location_description', 'locationDescription')),
     ]
+    wardCommune: Annotated[
+        str | None,
+        Field(default=None, validation_alias=AliasChoices('ward_commune', 'wardCommune')),
+    ]
+    districtExtracted: Annotated[
+        str | None,
+        Field(default=None, validation_alias=AliasChoices('district_extracted', 'districtExtracted')),
+    ]
+    province: str | None = None
     normalizedAddress: Annotated[
         str | None,
         Field(default=None, validation_alias=AliasChoices('normalized_address', 'normalizedAddress')),

@@ -21,6 +21,7 @@ class Settings(BaseSettings):
 
     DATABASE_URL: str
     OPENROUTER_API_KEY: str = ''
+    GEMINI_API_KEY: str = ''
     HF_MODEL_ID: str = 'dat201204/phobert-vi-caucu-classifier'
     CLASSIFIER_THRESHOLD: float = 0.4
     CLASSIFIER_DEVICE: str = 'cpu'
