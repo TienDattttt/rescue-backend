@@ -30,38 +30,48 @@ async def _update_job(db: AsyncSession, job_id: str, **kwargs: Any) -> None:
     await db.refresh(job)
 
 
-async def _save_cases_to_db(db: AsyncSession, final_cases: list[dict[str, Any]], post_url: str, total_comments: int) -> None:
-    if not final_cases:
-        return
-
-    source_post_id = str(final_cases[0].get('source_post_id') or '')
+async def _save_cases_to_db(
+    db: AsyncSession,
+    final_cases: list[dict[str, Any]],
+    post_url: str,
+    total_comments: int,
+    source_post_id: str,
+) -> None:
+    source_post_id = str(source_post_id or '').strip()
     if source_post_id:
         await db.execute(delete(RescueCase).where(RescueCase.source_post_id == source_post_id))
 
-    db.add_all(RescueCase(**{key: value for key, value in item.items() if not key.startswith('_')}) for item in final_cases)
-
     districts = sorted({str(item.get('district') or '').strip() for item in final_cases if str(item.get('district') or '').strip()})
-    monitored_post = await db.get(MonitoredPost, source_post_id)
-    if monitored_post is None:
-        monitored_post = MonitoredPost(
-            id=source_post_id,
-            title=post_url,
-            source_name='Facebook',
-            sync_status='live',
-            comment_volume=total_comments,
-            last_sync_at=datetime.now(timezone.utc),
-            district_scope=districts,
-        )
-        db.add(monitored_post)
-    else:
-        monitored_post.title = post_url
-        monitored_post.source_name = 'Facebook'
-        monitored_post.sync_status = 'live'
-        monitored_post.comment_volume = total_comments
-        monitored_post.last_sync_at = datetime.now(timezone.utc)
-        monitored_post.district_scope = districts
 
+    monitored_post = await db.get(MonitoredPost, source_post_id) if source_post_id else None
+    if source_post_id:
+        if monitored_post is None:
+            monitored_post = MonitoredPost(
+                id=source_post_id,
+                title=post_url,
+                source_name='Facebook',
+                sync_status='live',
+                comment_volume=total_comments,
+                last_sync_at=datetime.now(timezone.utc),
+                district_scope=districts,
+            )
+            db.add(monitored_post)
+        else:
+            monitored_post.title = post_url
+            monitored_post.source_name = 'Facebook'
+            monitored_post.sync_status = 'live'
+            monitored_post.comment_volume = total_comments
+            monitored_post.last_sync_at = datetime.now(timezone.utc)
+            monitored_post.district_scope = districts
+
+    if not final_cases:
+        logger.warning('Pipeline finished with no rescue cases for post %s', source_post_id or post_url)
+        await db.commit()
+        return
+
+    db.add_all(RescueCase(**{key: value for key, value in item.items() if not key.startswith('_')}) for item in final_cases)
     await db.commit()
+    logger.info('Saved %s cases for post %s', len(final_cases), source_post_id)
 
 
 async def _run_pipeline_with_session(job_id: str, post_url: str, db: AsyncSession) -> None:
@@ -95,7 +105,7 @@ async def _run_pipeline_with_session(job_id: str, post_url: str, db: AsyncSessio
         )
 
         await _update_job(db, job_id, status=PipelineJobStatusEnum.extracting, current_stage='Đang trích xuất thông tin bằng AI...')
-        extracted = await stage3_extract(sos_comments)
+        extracted = await stage3_extract(sos_comments, job_id=job_id)
         await _update_job(
             db,
             job_id,
@@ -106,7 +116,13 @@ async def _run_pipeline_with_session(job_id: str, post_url: str, db: AsyncSessio
 
         await _update_job(db, job_id, status=PipelineJobStatusEnum.deduplicating, current_stage='Đang loại trùng lặp...')
         final_cases = stage4_dedup(extracted)
-        await _save_cases_to_db(db, final_cases, post_url=post_url, total_comments=len(raw_comments))
+        await _save_cases_to_db(
+            db,
+            final_cases,
+            post_url=post_url,
+            total_comments=len(raw_comments),
+            source_post_id=post_id,
+        )
         await _update_job(
             db,
             job_id,

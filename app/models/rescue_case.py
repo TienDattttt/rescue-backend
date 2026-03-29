@@ -44,7 +44,7 @@ class RescueCase(Base):
     source_post_id: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
     raw_comment: Mapped[str] = mapped_column(Text, nullable=False)
     commenter_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    severity: Mapped[SeverityLevel] = mapped_column(SqlEnum(SeverityLevel, name='severity_level'), nullable=False)
+    severity: Mapped[SeverityLevel] = mapped_column(SqlEnum(SeverityLevel, name='severity_level'), nullable=False, index=True)
     location_description: Mapped[str | None] = mapped_column(Text, nullable=True)
     ward_commune: Mapped[str | None] = mapped_column(String(255), nullable=True)
     district_extracted: Mapped[str | None] = mapped_column(String(255), nullable=True)
@@ -63,10 +63,10 @@ class RescueCase(Base):
     ai_confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
     llm_confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
     geocode_status: Mapped[GeocodeStatus] = mapped_column(
-        SqlEnum(GeocodeStatus, name='geocode_status'), nullable=False, default=GeocodeStatus.pending
+        SqlEnum(GeocodeStatus, name='geocode_status'), nullable=False, default=GeocodeStatus.pending, index=True
     )
     rescue_status: Mapped[RescueStatus] = mapped_column(
-        SqlEnum(RescueStatus, name='rescue_status'), nullable=False, default=RescueStatus.waiting
+        SqlEnum(RescueStatus, name='rescue_status'), nullable=False, default=RescueStatus.waiting, index=True
     )
     current_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     current_rank: Mapped[int | None] = mapped_column(Integer, nullable=True)

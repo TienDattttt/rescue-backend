@@ -56,7 +56,12 @@ async def get_dashboard(
         .order_by(RescueCase.created_at.desc())
     )
     cases = list(cases_result.scalars().all())
-    shortlisted_count = min(len(cases), 10)
+    shortlisted = sorted(
+        [case for case in cases if case.ai_confidence is not None],
+        key=lambda item: item.ai_confidence,
+        reverse=True,
+    )[:10]
+    shortlisted_count = len(shortlisted)
 
     posts = await fetch_monitored_posts(db)
 

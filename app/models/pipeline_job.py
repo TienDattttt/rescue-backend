@@ -27,7 +27,7 @@ class PipelineJob(Base):
     post_url: Mapped[str] = mapped_column(String(1024), nullable=False)
     post_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     status: Mapped[PipelineJobStatusEnum] = mapped_column(
-        SqlEnum(PipelineJobStatusEnum, name='pipeline_job_status'), nullable=False, default=PipelineJobStatusEnum.pending
+        SqlEnum(PipelineJobStatusEnum, name='pipeline_job_status'), nullable=False, default=PipelineJobStatusEnum.pending, index=True
     )
     progress: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     current_stage: Mapped[str | None] = mapped_column(String(500), nullable=True)
