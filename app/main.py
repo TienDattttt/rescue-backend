@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import asyncio
 import logging
-import time
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -10,7 +8,6 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.v1 import api_v1_router
 from app.core.config import get_settings
-from app.services.classifier_service import get_classifier_service
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -18,10 +15,6 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    started = time.perf_counter()
-    loop = asyncio.get_running_loop()
-    await loop.run_in_executor(None, get_classifier_service)
-    logger.info('Classifier warmup completed in %.2fs', time.perf_counter() - started)
     logger.info('🚀 rescue_backend ready')
     yield
 

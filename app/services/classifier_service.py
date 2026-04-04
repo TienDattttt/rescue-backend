@@ -22,6 +22,9 @@ except ImportError:  # pragma: no cover
 
 from app.core.config import get_settings
 
+# NOTE: ClassifierService local chỉ dùng cho Gradio demo và script test local.
+# Production pipeline của rescue_backend gọi PhoBERT service qua HTTP trong stage2_classifier.py
+# -> cấu hình bằng PHOBERT_SERVICE_URL trong .env.
 logger = logging.getLogger(__name__)
 
 ZERO_WIDTH_PATTERN = re.compile(r'[\u200b\u200c\u200d\ufeff]')
@@ -214,4 +217,3 @@ def get_classifier_service() -> ClassifierService:
         threshold=settings.CLASSIFIER_THRESHOLD,
         device=settings.CLASSIFIER_DEVICE,
     )
-
