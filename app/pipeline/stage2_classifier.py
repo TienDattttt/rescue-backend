@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import logging
 import os
@@ -10,45 +10,54 @@ logger = logging.getLogger(__name__)
 
 PHOBERT_SERVICE_URL = os.getenv('PHOBERT_SERVICE_URL', 'http://localhost:7860')
 CLASSIFY_TIMEOUT = 120
+CHUNK_SIZE = 50
 
 
 async def stage2_classify(comments: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """
-    Gọi PhoBERT inference service qua HTTP.
-    Chỉ giữ lại comments có is_sos=True.
+    Goi PhoBERT inference service qua HTTP theo nhieu chunk nho.
+    Chi giu lai comments co is_sos=True.
     """
     if not comments:
         return []
 
-    texts = [str(comment.get('text') or '') for comment in comments]
     threshold = float(os.getenv('CLASSIFIER_THRESHOLD', '0.4'))
+    texts = [str(comment.get('text') or '') for comment in comments]
 
-    logger.info('Gửi %s comments đến PhoBERT service...', len(texts))
+    logger.info('Stage 2: %s comments, chunk_size=%s', len(texts), CHUNK_SIZE)
 
-    try:
-        async with httpx.AsyncClient(timeout=CLASSIFY_TIMEOUT) as client:
-            response = await client.post(
-                f'{PHOBERT_SERVICE_URL}/classify',
-                json={'texts': texts, 'threshold': threshold},
-            )
-            response.raise_for_status()
-            payload = response.json()
-    except httpx.TimeoutException as exc:
-        logger.error('PhoBERT service timeout')
-        raise RuntimeError('PhoBERT service không phản hồi') from exc
-    except httpx.HTTPError as exc:
-        logger.error('PhoBERT service lỗi: %s', exc)
-        raise RuntimeError(f'PhoBERT service lỗi: {exc}') from exc
+    all_predictions: list[dict[str, Any]] = []
+    total_chunks = (len(texts) + CHUNK_SIZE - 1) // CHUNK_SIZE
 
-    predictions = payload.get('predictions') or []
+    async with httpx.AsyncClient(timeout=CLASSIFY_TIMEOUT) as client:
+        for index in range(0, len(texts), CHUNK_SIZE):
+            chunk_texts = texts[index:index + CHUNK_SIZE]
+            chunk_num = index // CHUNK_SIZE + 1
+
+            logger.info('Chunk %s/%s: %s texts', chunk_num, total_chunks, len(chunk_texts))
+
+            try:
+                response = await client.post(
+                    f'{PHOBERT_SERVICE_URL}/classify',
+                    json={'texts': chunk_texts, 'threshold': threshold},
+                )
+                response.raise_for_status()
+                payload = response.json()
+                all_predictions.extend(payload.get('predictions') or [])
+            except httpx.TimeoutException as exc:
+                logger.error('Chunk %s timeout', chunk_num)
+                raise RuntimeError('PhoBERT service timeout') from exc
+            except httpx.HTTPError as exc:
+                logger.error('Chunk %s loi: %s', chunk_num, exc)
+                raise RuntimeError(f'PhoBERT service loi: {exc}') from exc
+
     sos_comments: list[dict[str, Any]] = []
-
-    for comment, prediction in zip(comments, predictions):
+    for comment, prediction in zip(comments, all_predictions):
         if not prediction.get('is_sos'):
             continue
         enriched = dict(comment)
         enriched['ai_confidence'] = float(prediction.get('confidence') or 0.0)
         sos_comments.append(enriched)
 
-    logger.info('Stage 2 xong: %s/%s comments cầu cứu', len(sos_comments), len(comments))
+    logger.info('Stage 2 xong: %s/%s cau cuu', len(sos_comments), len(comments))
     return sos_comments
