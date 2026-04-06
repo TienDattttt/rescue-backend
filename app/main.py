@@ -17,24 +17,18 @@ except Exception as e:
     sys.exit(1)
 
 import logging
-from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy import text
 
 from app.api.v1 import api_v1_router
+from app.core.database import engine
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    logger.info('rescue_backend ready')
-    yield
-
-
-app = FastAPI(title='Rescue Backend', lifespan=lifespan)
+app = FastAPI(title='Rescue Backend')
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.CORS_ORIGINS,
@@ -43,6 +37,21 @@ app.add_middleware(
     allow_headers=['*'],
 )
 logger.info(f"CORS allowed origins: {settings.CORS_ORIGINS}")
+
+
+@app.on_event('startup')
+async def startup_check() -> None:
+    logger.info('Checking database connectivity...')
+    try:
+        async with engine.connect() as connection:
+            await connection.execute(text('SELECT 1'))
+        logger.info('Database connectivity check succeeded')
+    except Exception:
+        logger.exception('Database connectivity check failed')
+        raise
+
+    logger.info('rescue_backend ready')
+
 
 app.include_router(api_v1_router, prefix='/api/v1')
 app.include_router(api_v1_router)
