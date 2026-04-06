@@ -5,7 +5,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Annotated, Any
 
-from pydantic import field_validator
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 BASE_DIR = Path(__file__).resolve().parents[2]
@@ -26,7 +26,7 @@ class Settings(BaseSettings):
     CLASSIFIER_THRESHOLD: float = 0.4
     CLASSIFIER_DEVICE: str = 'cpu'
     OPENROUTER_MODEL: str = 'meta-llama/llama-3.3-70b-instruct:free'
-    CORS_ORIGINS: Annotated[list[str], NoDecode] = ['http://localhost:5173']
+    CORS_ORIGINS: Annotated[list[str], NoDecode] = Field(default_factory=list)
 
     @field_validator('DATABASE_URL', mode='before')
     @classmethod
@@ -69,4 +69,6 @@ class Settings(BaseSettings):
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
-    return Settings()
+    settings = Settings()
+    print(f"[STARTUP] Parsed CORS_ORIGINS: {settings.CORS_ORIGINS}", flush=True)
+    return settings

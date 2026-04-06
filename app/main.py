@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info('🚀 rescue_backend ready')
+    logger.info('rescue_backend ready')
     yield
 
 
@@ -42,6 +42,7 @@ app.add_middleware(
     allow_methods=['*'],
     allow_headers=['*'],
 )
+logger.info(f"CORS allowed origins: {settings.CORS_ORIGINS}")
 
 app.include_router(api_v1_router, prefix='/api/v1')
 app.include_router(api_v1_router)
