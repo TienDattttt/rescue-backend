@@ -8,7 +8,6 @@ from typing import Any
 
 import requests
 
-from scraper.comment_scraper import fetch_comments, fetch_replies
 
 URL_PATTERN = re.compile(r'https?://\S+|www\.\S+', re.IGNORECASE)
 POST_ID_PATTERNS = [
@@ -59,7 +58,7 @@ def extract_post_id_from_url(url: str) -> str:
             if match:
                 return match.group(1)
 
-    raise ValueError(f'Không thể trích xuất post_id từ URL: {url}')
+    raise ValueError(f'KhÃ´ng thá»ƒ trÃ­ch xuáº¥t post_id tá»« URL: {url}')
 
 
 def _parse_reaction_count(value: Any) -> int:
@@ -75,6 +74,8 @@ def _make_comment_id(post_id: str, source: str, indices: list[int]) -> str:
 
 
 def _blocking_stage1_scrape(post_url: str) -> list[dict[str, Any]]:
+    from scraper.comment_scraper import fetch_comments, fetch_replies
+
     post_id = extract_post_id_from_url(post_url)
     feedback_id = base64.b64encode(f'feedback:{post_id}'.encode()).decode()
     comments, _post_info = fetch_comments(feedback_id)
