@@ -2,12 +2,25 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import logging
 import re
 from html import unescape
 from typing import Any
 
 import requests
 
+logger = logging.getLogger(__name__)
+
+try:
+    from scraper.comment_scraper import fetch_comments, fetch_replies
+
+    SCRAPER_AVAILABLE = True
+except ImportError:
+    fetch_comments = None
+    fetch_replies = None
+    SCRAPER_AVAILABLE = False
+
+SCRAPER_UNAVAILABLE_ERROR = 'Scraper is not available in this deployment. Stage 1 cannot run.'
 
 URL_PATTERN = re.compile(r'https?://\S+|www\.\S+', re.IGNORECASE)
 POST_ID_PATTERNS = [
@@ -58,7 +71,7 @@ def extract_post_id_from_url(url: str) -> str:
             if match:
                 return match.group(1)
 
-    raise ValueError(f'KhÃ´ng thá»ƒ trÃ­ch xuáº¥t post_id tá»« URL: {url}')
+    raise ValueError(f'Khong the trich xuat post_id tu URL: {url}')
 
 
 def _parse_reaction_count(value: Any) -> int:
@@ -74,7 +87,9 @@ def _make_comment_id(post_id: str, source: str, indices: list[int]) -> str:
 
 
 def _blocking_stage1_scrape(post_url: str) -> list[dict[str, Any]]:
-    from scraper.comment_scraper import fetch_comments, fetch_replies
+    if not SCRAPER_AVAILABLE:
+        logger.error('Scraper not available in this deployment')
+        raise RuntimeError(SCRAPER_UNAVAILABLE_ERROR)
 
     post_id = extract_post_id_from_url(post_url)
     feedback_id = base64.b64encode(f'feedback:{post_id}'.encode()).decode()

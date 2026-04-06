@@ -8,6 +8,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Stage 1 scraping runs as a separate local process.
+# This image serves the API and pipeline stages 2-4 only.
+# We intentionally do not copy scraper/ or install SeleniumBase/PyQt6 here.
 COPY alembic ./alembic
 COPY app ./app
 COPY alembic.ini ./

@@ -12,7 +12,7 @@ from app.core.database import async_session_maker
 from app.models.monitored_post import MonitoredPost
 from app.models.pipeline_job import PipelineJob, PipelineJobStatusEnum
 from app.models.rescue_case import RescueCase
-from app.pipeline.stage1_scraper import extract_post_id_from_url, stage1_scrape
+from app.pipeline.stage1_scraper import SCRAPER_UNAVAILABLE_ERROR, extract_post_id_from_url, stage1_scrape
 from app.pipeline.stage2_classifier import stage2_classify
 from app.pipeline.stage3_extractor import stage3_extract
 from app.pipeline.stage4_dedup import stage4_dedup
@@ -71,7 +71,88 @@ async def _save_cases_to_db(
 
     db.add_all(RescueCase(**{key: value for key, value in item.items() if not key.startswith('_')}) for item in final_cases)
     await db.commit()
-    logger.info('Saved %s cases for post %s', len(final_cases), source_post_id)
+    logger.info('Saved %s cases for post %s', len(final_cases), source_post_id or post_url)
+
+
+def _infer_source_post_id(post_url: str, raw_comments: list[dict[str, Any]]) -> str:
+    for comment in raw_comments:
+        post_id = str(comment.get('post_id') or '').strip()
+        if post_id:
+            return post_id
+
+    try:
+        return extract_post_id_from_url(post_url)
+    except Exception:
+        return ''
+
+
+async def _run_pipeline_after_scrape(
+    job_id: str,
+    post_url: str,
+    raw_comments: list[dict[str, Any]],
+    source_post_id: str,
+    db: AsyncSession,
+) -> None:
+    await _update_job(
+        db,
+        job_id,
+        status=PipelineJobStatusEnum.classifying,
+        current_stage='Dang phan loai comment cau cuu...',
+        post_id=source_post_id or None,
+        progress=25,
+        total_comments=len(raw_comments),
+    )
+    sos_comments = await stage2_classify(raw_comments)
+    await _update_job(
+        db,
+        job_id,
+        progress=50,
+        classified_count=len(sos_comments),
+        current_stage=f'Da phan loai: {len(sos_comments)} cau cuu / {len(raw_comments)}',
+    )
+
+    await _update_job(db, job_id, status=PipelineJobStatusEnum.extracting, current_stage='Dang trich xuat thong tin bang AI...')
+    extracted = await stage3_extract(sos_comments, job_id=job_id)
+    await _update_job(
+        db,
+        job_id,
+        progress=75,
+        extracted_count=len(extracted),
+        current_stage=f'Da trich xuat {len(extracted)} ca',
+    )
+
+    await _update_job(db, job_id, status=PipelineJobStatusEnum.deduplicating, current_stage='Dang loai trung lap...')
+    final_cases = stage4_dedup(extracted)
+    await _save_cases_to_db(
+        db,
+        final_cases,
+        post_url=post_url,
+        total_comments=len(raw_comments),
+        source_post_id=source_post_id,
+    )
+    await _update_job(
+        db,
+        job_id,
+        status=PipelineJobStatusEnum.done,
+        progress=100,
+        current_stage=f'Hoan thanh: {len(final_cases)} ca sau dedup',
+    )
+
+
+async def _mark_job_failed(db: AsyncSession, job_id: str, exc: Exception) -> None:
+    message = str(exc)
+    if message == SCRAPER_UNAVAILABLE_ERROR:
+        logger.error('Pipeline job %s failed: %s', job_id, message)
+    else:
+        logger.exception('Pipeline job %s failed', job_id)
+
+    await _update_job(
+        db,
+        job_id,
+        status=PipelineJobStatusEnum.failed,
+        error_message=message,
+        current_stage='Pipeline failed',
+    )
 
 
 async def _run_pipeline_with_session(job_id: str, post_url: str, db: AsyncSession) -> None:
@@ -81,7 +162,7 @@ async def _run_pipeline_with_session(job_id: str, post_url: str, db: AsyncSessio
             db,
             job_id,
             status=PipelineJobStatusEnum.scraping,
-            current_stage='Đang crawl comments từ Facebook...',
+            current_stage='Dang crawl comments tu Facebook...',
             post_id=post_id,
             progress=0,
         )
@@ -89,56 +170,35 @@ async def _run_pipeline_with_session(job_id: str, post_url: str, db: AsyncSessio
         await _update_job(
             db,
             job_id,
-            progress=25,
+            progress=10,
             total_comments=len(raw_comments),
-            current_stage=f'Đã crawl {len(raw_comments)} comments',
+            current_stage=f'Da crawl {len(raw_comments)} comments',
         )
-
-        await _update_job(db, job_id, status=PipelineJobStatusEnum.classifying, current_stage='Đang phân loại comment cầu cứu...')
-        sos_comments = await stage2_classify(raw_comments)
-        await _update_job(
-            db,
-            job_id,
-            progress=50,
-            classified_count=len(sos_comments),
-            current_stage=f'Đã phân loại: {len(sos_comments)} cầu cứu / {len(raw_comments)}',
-        )
-
-        await _update_job(db, job_id, status=PipelineJobStatusEnum.extracting, current_stage='Đang trích xuất thông tin bằng AI...')
-        extracted = await stage3_extract(sos_comments, job_id=job_id)
-        await _update_job(
-            db,
-            job_id,
-            progress=75,
-            extracted_count=len(extracted),
-            current_stage=f'Đã trích xuất {len(extracted)} ca',
-        )
-
-        await _update_job(db, job_id, status=PipelineJobStatusEnum.deduplicating, current_stage='Đang loại trùng lặp...')
-        final_cases = stage4_dedup(extracted)
-        await _save_cases_to_db(
-            db,
-            final_cases,
-            post_url=post_url,
-            total_comments=len(raw_comments),
-            source_post_id=post_id,
-        )
-        await _update_job(
-            db,
-            job_id,
-            status=PipelineJobStatusEnum.done,
-            progress=100,
-            current_stage=f'✅ Hoàn thành: {len(final_cases)} ca sau dedup',
-        )
+        await _run_pipeline_after_scrape(job_id, post_url, raw_comments, post_id, db)
     except Exception as exc:
-        logger.exception('Pipeline job %s failed', job_id)
+        await _mark_job_failed(db, job_id, exc)
+
+
+async def _run_pipeline_from_comments_with_session(
+    job_id: str,
+    post_url: str,
+    raw_comments: list[dict[str, Any]],
+    db: AsyncSession,
+) -> None:
+    try:
+        source_post_id = _infer_source_post_id(post_url, raw_comments)
         await _update_job(
             db,
             job_id,
-            status=PipelineJobStatusEnum.failed,
-            error_message=str(exc),
-            current_stage='Pipeline thất bại',
+            status=PipelineJobStatusEnum.classifying,
+            current_stage=f'Loaded {len(raw_comments)} pre-scraped comments',
+            post_id=source_post_id or None,
+            progress=10,
+            total_comments=len(raw_comments),
         )
+        await _run_pipeline_after_scrape(job_id, post_url, raw_comments, source_post_id, db)
+    except Exception as exc:
+        await _mark_job_failed(db, job_id, exc)
 
 
 async def run_pipeline(job_id: str, post_url: str, db: AsyncSession | None = None) -> None:
@@ -148,3 +208,17 @@ async def run_pipeline(job_id: str, post_url: str, db: AsyncSession | None = Non
 
     async with async_session_maker() as session:
         await _run_pipeline_with_session(job_id, post_url, session)
+
+
+async def run_pipeline_from_comments(
+    job_id: str,
+    post_url: str,
+    raw_comments: list[dict[str, Any]],
+    db: AsyncSession | None = None,
+) -> None:
+    if db is not None:
+        await _run_pipeline_from_comments_with_session(job_id, post_url, raw_comments, db)
+        return
+
+    async with async_session_maker() as session:
+        await _run_pipeline_from_comments_with_session(job_id, post_url, raw_comments, session)

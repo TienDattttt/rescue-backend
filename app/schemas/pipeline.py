@@ -4,11 +4,29 @@ from datetime import datetime
 from typing import Annotated, Any
 from uuid import UUID
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field, HttpUrl, field_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
 
 
 class PipelineRunRequest(BaseModel):
     post_url: str
+
+
+class PreScrapedCommentInput(BaseModel):
+    model_config = ConfigDict(extra='allow')
+
+    text: str
+    id: str | None = None
+    author: str | None = None
+    timestamp: str | None = None
+    reaction_count: int | None = None
+    source: str | None = None
+    parent_author: str | None = None
+    post_id: str | None = None
+
+
+class PipelineRunFromFileRequest(BaseModel):
+    post_url: str | None = None
+    comments: list[PreScrapedCommentInput]
 
 
 class PipelineRunResponse(BaseModel):
