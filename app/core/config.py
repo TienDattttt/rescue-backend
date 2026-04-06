@@ -28,6 +28,26 @@ class Settings(BaseSettings):
     OPENROUTER_MODEL: str = 'meta-llama/llama-3.3-70b-instruct:free'
     CORS_ORIGINS: Annotated[list[str], NoDecode] = ['http://localhost:5173']
 
+    @field_validator('DATABASE_URL', mode='before')
+    @classmethod
+    def normalize_database_url(cls, value: Any) -> str:
+        if value is None:
+            raise TypeError('DATABASE_URL is required.')
+
+        url = str(value).strip()
+        if not url:
+            raise ValueError('DATABASE_URL is required.')
+
+        if url.startswith('postgresql+asyncpg://'):
+            return url
+        if url.startswith('postgresql+psycopg2://'):
+            return 'postgresql+asyncpg://' + url[len('postgresql+psycopg2://'):]
+        if url.startswith('postgresql://'):
+            return 'postgresql+asyncpg://' + url[len('postgresql://'):]
+        if url.startswith('postgres://'):
+            return 'postgresql+asyncpg://' + url[len('postgres://'):]
+        return url
+
     @field_validator('CORS_ORIGINS', mode='before')
     @classmethod
     def parse_cors_origins(cls, value: Any) -> list[str]:
