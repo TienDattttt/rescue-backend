@@ -16,6 +16,7 @@ from app.pipeline.stage1_scraper import SCRAPER_UNAVAILABLE_ERROR, extract_post_
 from app.pipeline.stage2_classifier import stage2_classify
 from app.pipeline.stage3_extractor import stage3_extract
 from app.pipeline.stage4_dedup import stage4_dedup
+from app.schemas.pipeline import CommentInput
 
 logger = logging.getLogger(__name__)
 
@@ -84,6 +85,48 @@ def _infer_source_post_id(post_url: str, raw_comments: list[dict[str, Any]]) -> 
         return extract_post_id_from_url(post_url)
     except Exception:
         return ''
+
+
+def _coerce_reaction_count(value: Any) -> int:
+    if value in (None, ''):
+        return 0
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _normalize_pre_scraped_comments(
+    comments: list[CommentInput] | list[dict[str, Any]],
+    post_url: str,
+) -> list[dict[str, Any]]:
+    fallback_post_id = ''
+    try:
+        fallback_post_id = extract_post_id_from_url(post_url)
+    except Exception:
+        fallback_post_id = ''
+
+    normalized_comments: list[dict[str, Any]] = []
+    for index, comment in enumerate(comments, start=1):
+        if isinstance(comment, CommentInput):
+            item = comment.model_dump(exclude_none=True)
+        else:
+            item = dict(comment)
+
+        normalized_comments.append(
+            {
+                'id': str(item.get('id') or f'pre-scraped-{index}'),
+                'text': str(item.get('text') or ''),
+                'author': str(item.get('author')) if item.get('author') is not None else None,
+                'timestamp': str(item.get('timestamp')) if item.get('timestamp') is not None else None,
+                'reaction_count': _coerce_reaction_count(item.get('reaction_count')),
+                'source': str(item.get('source')) if item.get('source') is not None else None,
+                'parent_author': str(item.get('parent_author')) if item.get('parent_author') is not None else None,
+                'post_id': str(item.get('post_id') or fallback_post_id),
+            }
+        )
+
+    return normalized_comments
 
 
 async def _run_pipeline_after_scrape(
@@ -181,12 +224,18 @@ async def _run_pipeline_with_session(job_id: str, post_url: str, db: AsyncSessio
 
 async def _run_pipeline_from_comments_with_session(
     job_id: str,
+    comments: list[CommentInput] | list[dict[str, Any]],
     post_url: str,
-    raw_comments: list[dict[str, Any]],
     db: AsyncSession,
 ) -> None:
     try:
+        raw_comments = _normalize_pre_scraped_comments(comments, post_url)
         source_post_id = _infer_source_post_id(post_url, raw_comments)
+        if source_post_id:
+            for comment in raw_comments:
+                if not str(comment.get('post_id') or '').strip():
+                    comment['post_id'] = source_post_id
+
         await _update_job(
             db,
             job_id,
@@ -212,13 +261,13 @@ async def run_pipeline(job_id: str, post_url: str, db: AsyncSession | None = Non
 
 async def run_pipeline_from_comments(
     job_id: str,
+    comments: list[CommentInput] | list[dict[str, Any]],
     post_url: str,
-    raw_comments: list[dict[str, Any]],
     db: AsyncSession | None = None,
 ) -> None:
     if db is not None:
-        await _run_pipeline_from_comments_with_session(job_id, post_url, raw_comments, db)
+        await _run_pipeline_from_comments_with_session(job_id, comments, post_url, db)
         return
 
     async with async_session_maker() as session:
-        await _run_pipeline_from_comments_with_session(job_id, post_url, raw_comments, session)
+        await _run_pipeline_from_comments_with_session(job_id, comments, post_url, session)

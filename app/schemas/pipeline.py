@@ -11,7 +11,7 @@ class PipelineRunRequest(BaseModel):
     post_url: str
 
 
-class PreScrapedCommentInput(BaseModel):
+class CommentInput(BaseModel):
     model_config = ConfigDict(extra='allow')
 
     text: str
@@ -24,14 +24,26 @@ class PreScrapedCommentInput(BaseModel):
     post_id: str | None = None
 
 
-class PipelineRunFromFileRequest(BaseModel):
-    post_url: str | None = None
-    comments: list[PreScrapedCommentInput]
+class RunFromFileRequest(BaseModel):
+    post_url: str
+    comments: Annotated[list[CommentInput], Field(min_length=1)]
 
 
-class PipelineRunResponse(BaseModel):
+class PipelineJobCreate(BaseModel):
     job_id: str
     status: str
+
+
+class PreScrapedCommentInput(CommentInput):
+    pass
+
+
+class PipelineRunFromFileRequest(RunFromFileRequest):
+    pass
+
+
+class PipelineRunResponse(PipelineJobCreate):
+    pass
 
 
 class PipelineJobStatus(BaseModel):

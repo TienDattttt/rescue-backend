@@ -12,15 +12,15 @@ from app.models.pipeline_job import PipelineJob, PipelineJobStatusEnum
 from app.pipeline.orchestrator import run_pipeline, run_pipeline_from_comments
 from app.pipeline.stage1_scraper import SCRAPER_AVAILABLE, SCRAPER_UNAVAILABLE_ERROR
 from app.schemas.pipeline import (
+    PipelineJobCreate,
     PipelineJobStatus,
-    PipelineRunFromFileRequest,
     PipelineRunRequest,
     PipelineRunResponse,
+    RunFromFileRequest,
 )
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix='/pipeline')
-PRE_SCRAPED_POST_URL = 'pre-scraped://manual-upload'
 
 
 def _is_facebook_post_url(url: str) -> bool:
@@ -69,21 +69,15 @@ async def run_pipeline_job(
     return PipelineRunResponse(job_id=str(job.id), status='pending')
 
 
-@router.post('/run-from-file', response_model=PipelineRunResponse)
+@router.post('/run-from-file', response_model=PipelineJobCreate, status_code=status.HTTP_201_CREATED)
 async def run_pipeline_job_from_file(
-    payload: PipelineRunFromFileRequest,
+    payload: RunFromFileRequest,
     background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
-) -> PipelineRunResponse:
-    if not payload.comments:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='comments khong duoc rong.')
-
-    post_url = (payload.post_url or PRE_SCRAPED_POST_URL).strip() or PRE_SCRAPED_POST_URL
-    job = await _create_job(db, post_url)
-    comments = [comment.model_dump(exclude_none=True) for comment in payload.comments]
-
-    background_tasks.add_task(run_pipeline_from_comments, str(job.id), post_url, comments)
-    return PipelineRunResponse(job_id=str(job.id), status='pending')
+) -> PipelineJobCreate:
+    job = await _create_job(db, payload.post_url)
+    background_tasks.add_task(run_pipeline_from_comments, str(job.id), payload.comments, payload.post_url)
+    return PipelineJobCreate(job_id=str(job.id), status='pending')
 
 
 @router.get('/status/{job_id}', response_model=PipelineJobStatus)
